@@ -14,7 +14,7 @@ AWS_REGION="${AWS_REGION:-us-east-2}"
 AWS_PROFILE="${AWS_PROFILE:-personal}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-}"
 MONTHLY_BUDGET="${MONTHLY_BUDGET:-15}"
-DEFAULT_MODEL="${DEFAULT_MODEL:-us.amazon.nova-lite-v1:0}"
+DEFAULT_MODEL="${DEFAULT_MODEL:-us.anthropic.claude-3-5-haiku-20241022-v1:0}"
 
 # Load .env file if it exists
 if [ -f "agent-container/.env" ]; then
