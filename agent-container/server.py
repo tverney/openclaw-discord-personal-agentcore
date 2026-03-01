@@ -277,16 +277,24 @@ def restore_gog_credentials_from_s3() -> None:
             raise
 
         # Configure GOG to use file-based keyring (no macOS Keychain in container)
-        subprocess.run(
+        # GOG_KEYRING_PASSWORD is REQUIRED for file keyring in non-interactive context
+        if not os.environ.get("GOG_KEYRING_PASSWORD"):
+            os.environ["GOG_KEYRING_PASSWORD"] = "openclaw-gog-keyring-2024"
+            logger.info("Set GOG_KEYRING_PASSWORD for file-based keyring")
+
+        result = subprocess.run(
             ["gog", "auth", "keyring", "file"],
-            capture_output=True, timeout=10,
+            capture_output=True, text=True, timeout=10,
         )
+        logger.info(f"GOG keyring file: rc={result.returncode} stdout={result.stdout.strip()} stderr={result.stderr.strip()}")
 
         # Import the client credentials
         result = subprocess.run(
             ["gog", "auth", "credentials", "set", creds_path],
             capture_output=True, text=True, timeout=10,
+            env={**os.environ, "GOG_KEYRING_PASSWORD": os.environ.get("GOG_KEYRING_PASSWORD", "openclaw-gog-keyring-2024")},
         )
+        logger.info(f"GOG credentials set: rc={result.returncode} stdout={result.stdout.strip()} stderr={result.stderr.strip()}")
         if result.returncode != 0:
             logger.warning(f"GOG credentials set failed: {result.stderr}")
 
@@ -294,11 +302,21 @@ def restore_gog_credentials_from_s3() -> None:
         result = subprocess.run(
             ["gog", "auth", "tokens", "import", token_path],
             capture_output=True, text=True, timeout=10,
+            env={**os.environ, "GOG_KEYRING_PASSWORD": os.environ.get("GOG_KEYRING_PASSWORD", "openclaw-gog-keyring-2024")},
         )
+        logger.info(f"GOG tokens import: rc={result.returncode} stdout={result.stdout.strip()} stderr={result.stderr.strip()}")
         if result.returncode == 0:
             logger.info(f"GOG credentials restored for {gog_account}")
         else:
             logger.warning(f"GOG token import failed: {result.stderr}")
+
+        # Verify credentials were stored
+        verify = subprocess.run(
+            ["gog", "auth", "list"],
+            capture_output=True, text=True, timeout=10,
+            env={**os.environ, "GOG_KEYRING_PASSWORD": os.environ.get("GOG_KEYRING_PASSWORD", "openclaw-gog-keyring-2024")},
+        )
+        logger.info(f"GOG auth list after restore: {verify.stdout.strip()}")
 
         # Set default account
         os.environ["GOG_ACCOUNT"] = gog_account
