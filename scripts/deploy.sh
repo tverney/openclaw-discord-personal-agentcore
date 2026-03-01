@@ -65,21 +65,13 @@ echo ""
 # Step 1: Build GOG CLI for Linux ARM64
 echo "🔨 Step 1: Building GOG CLI for Linux ARM64..."
 if command -v go &> /dev/null; then
-    GOOS=linux GOARCH=arm64 go build -o agent-container/gog github.com/steipete/gogcli/cmd/gog@latest 2>/dev/null || \
-    (
-        echo "  Building via temp module..."
-        TMPDIR=$(mktemp -d)
-        cd "$TMPDIR"
-        go mod init temp
-        go get github.com/steipete/gogcli/cmd/gog@latest
-        GOOS=linux GOARCH=arm64 go build -o "$OLDPWD/agent-container/gog" github.com/steipete/gogcli/cmd/gog
-        cd "$OLDPWD"
-        rm -rf "$TMPDIR"
-    )
-    echo "✅ GOG CLI built ($(file agent-container/gog | grep -o 'ARM aarch64\|ELF.*' | head -1))"
+    GOG_BUILD_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gog-build.XXXXXX")
+    git clone --depth 1 https://github.com/steipete/gogcli.git "$GOG_BUILD_DIR" 2>/dev/null
+    GOOS=linux GOARCH=arm64 go build -C "$GOG_BUILD_DIR" -o "$(pwd)/agent-container/gog" ./cmd/gog
+    rm -rf "$GOG_BUILD_DIR"
+    echo "✅ GOG CLI built ($(file agent-container/gog))"
 else
-    echo "⚠️  Go not installed — skipping GOG CLI build (google-workspace skill won't work)"
-    # Create a placeholder so COPY doesn't fail
+    echo "⚠️  Go not installed — skipping GOG CLI build (gog skill won't work)"
     echo '#!/bin/sh' > agent-container/gog
     echo 'echo "GOG CLI not installed. Install Go and rebuild."' >> agent-container/gog
     chmod +x agent-container/gog
