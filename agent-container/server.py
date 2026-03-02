@@ -741,6 +741,24 @@ class AgentCoreHandler(BaseHTTPRequestHandler):
                 diag["cron_list"] = result.stdout.strip() or result.stderr.strip() or "empty"
             except Exception as e:
                 diag["cron_list"] = f"error: {e}"
+            # Check system crontab
+            try:
+                result = subprocess.run(
+                    ["crontab", "-l"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                diag["system_crontab"] = result.stdout.strip() or result.stderr.strip() or "empty"
+            except Exception as e:
+                diag["system_crontab"] = f"error: {e}"
+            # Check if cron daemon is running
+            try:
+                result = subprocess.run(
+                    ["pgrep", "-x", "cron"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                diag["cron_daemon"] = f"running (pid={result.stdout.strip()})" if result.returncode == 0 else "not running"
+            except Exception as e:
+                diag["cron_daemon"] = f"error: {e}"
             self._respond(200, diag)
             return
         
@@ -932,6 +950,15 @@ def main():
     os.makedirs(WORKSPACE_DIR, exist_ok=True)
     os.makedirs(CRON_DIR, exist_ok=True)
     os.makedirs(OPENCLAW_DIR, exist_ok=True)
+    
+    # Start cron daemon — openclaw's cron feature uses system crontab
+    try:
+        subprocess.Popen(["cron"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        logger.info("cron daemon started")
+    except FileNotFoundError:
+        logger.warning("cron not installed — openclaw cron jobs won't work")
+    except Exception as e:
+        logger.warning(f"Failed to start cron daemon: {e}")
     
     proc = start_openclaw()
     wait_for_openclaw(STARTUP_TIMEOUT)
