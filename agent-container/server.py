@@ -331,6 +331,89 @@ def restore_gog_credentials_from_s3() -> None:
         logger.error(f"Failed to restore GOG credentials: {e}", exc_info=True)
 
 
+def restore_system_crontab_from_s3() -> None:
+    """Restore system crontab from S3.
+    
+    Openclaw writes cron jobs via the system crontab command, not to files
+    in the cron directory. We back up the raw crontab content to S3 and
+    restore it on container restart so scheduled jobs survive.
+    """
+    bucket_name = os.environ.get("SESSION_BACKUP_BUCKET")
+    if not bucket_name:
+        return
+    
+    try:
+        s3_client = boto3.client("s3")
+        crontab_key = "openclaw-system-crontab/crontab.txt"
+        
+        try:
+            response = s3_client.get_object(Bucket=bucket_name, Key=crontab_key)
+            crontab_content = response["Body"].read().decode("utf-8")
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "NoSuchKey":
+                logger.info("No saved crontab in S3, skipping restore")
+                return
+            raise
+        
+        if not crontab_content.strip():
+            logger.info("Saved crontab is empty, skipping restore")
+            return
+        
+        # Write crontab content to a temp file and load it
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".crontab", delete=False) as f:
+            f.write(crontab_content)
+            tmp_path = f.name
+        
+        try:
+            result = subprocess.run(
+                ["crontab", tmp_path],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0:
+                logger.info(f"Restored system crontab from S3 ({len(crontab_content)} bytes)")
+            else:
+                logger.warning(f"Failed to restore crontab: {result.stderr}")
+        finally:
+            os.remove(tmp_path)
+    
+    except ClientError as e:
+        logger.error(f"S3 error restoring crontab: {e}")
+    except Exception as e:
+        logger.error(f"Failed to restore system crontab: {e}", exc_info=True)
+
+
+def sync_system_crontab_to_s3() -> None:
+    """Back up the current system crontab to S3."""
+    bucket_name = os.environ.get("SESSION_BACKUP_BUCKET")
+    if not bucket_name:
+        return
+    
+    try:
+        result = subprocess.run(
+            ["crontab", "-l"],
+            capture_output=True, text=True, timeout=10,
+        )
+        
+        # crontab -l returns exit code 1 with "no crontab for root" when empty
+        if result.returncode != 0 and "no crontab" in result.stderr.lower():
+            return
+        
+        crontab_content = result.stdout.strip()
+        if not crontab_content:
+            return
+        
+        s3_client = boto3.client("s3")
+        s3_client.put_object(
+            Bucket=bucket_name,
+            Key="openclaw-system-crontab/crontab.txt",
+            Body=crontab_content.encode("utf-8"),
+        )
+        logger.info(f"Backed up system crontab to S3 ({len(crontab_content)} bytes)")
+    
+    except Exception as e:
+        logger.error(f"Failed to back up system crontab: {e}")
+
 
 def sync_sessions_to_s3() -> None:
     """Sync openclaw state (sessions + workspace + cron) to S3.
@@ -398,6 +481,9 @@ def sync_sessions_to_s3() -> None:
         
         if synced_count > 0:
             logger.info(f"Synced {synced_count} files to S3")
+        
+        # Also back up system crontab (openclaw writes cron jobs here)
+        sync_system_crontab_to_s3()
     
     except ClientError as e:
         logger.error(f"S3 client error during sync: {e}")
@@ -951,12 +1037,37 @@ def main():
     os.makedirs(CRON_DIR, exist_ok=True)
     os.makedirs(OPENCLAW_DIR, exist_ok=True)
     
-    # Start cron daemon — openclaw's cron feature uses system crontab
+    # Start cron daemon — openclaw's cron feature uses system crontab.
+    # In Debian slim containers, cron needs explicit foreground start and
+    # the /var/run/crond.pid file must be writable.
     try:
-        subprocess.Popen(["cron"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        logger.info("cron daemon started")
-    except FileNotFoundError:
-        logger.warning("cron not installed — openclaw cron jobs won't work")
+        os.makedirs("/var/run", exist_ok=True)
+        # Try 'cron' first (Debian), fall back to 'crond' (Alpine)
+        for cron_bin in ["cron", "crond", "/usr/sbin/cron"]:
+            try:
+                subprocess.run(
+                    [cron_bin],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=5,
+                )
+                # Verify it's actually running
+                verify = subprocess.run(
+                    ["pgrep", "-x", "cron"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if verify.returncode == 0:
+                    logger.info(f"cron daemon started via '{cron_bin}' (pid={verify.stdout.strip()})")
+                    break
+                else:
+                    logger.warning(f"'{cron_bin}' ran but daemon not detected, trying next...")
+            except FileNotFoundError:
+                continue
+            except subprocess.TimeoutExpired:
+                logger.warning(f"'{cron_bin}' timed out, trying next...")
+                continue
+        else:
+            logger.warning("No cron binary found — openclaw cron jobs won't work")
     except Exception as e:
         logger.warning(f"Failed to start cron daemon: {e}")
     
@@ -974,6 +1085,9 @@ def main():
     
     logger.info("Restoring state from S3 (overwriting openclaw defaults)...")
     restore_sessions_from_s3()
+    
+    # Restore system crontab from S3 (openclaw writes cron jobs via crontab)
+    restore_system_crontab_from_s3()
     
     # Restore GOG (Google Workspace) credentials if configured
     restore_gog_credentials_from_s3()
