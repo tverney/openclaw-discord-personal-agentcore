@@ -360,14 +360,11 @@ Resources:
                       logger.warning(f"Could not fetch thread history: {e}")
 
               try:
-                  await reply_target.trigger_typing()
-              except Exception:
-                  pass
-              try:
-                  ai_text = await asyncio.wait_for(
-                      asyncio.to_thread(invoke_runtime, clean, "discord_general", history or None),
-                      timeout=120,
-                  )
+                  async with reply_target.typing():
+                      ai_text = await asyncio.wait_for(
+                          asyncio.to_thread(invoke_runtime, clean, "discord_general", history or None),
+                          timeout=120,
+                      )
                   if len(ai_text) <= 2000:
                       await reply_target.send(ai_text)
                   else:
