@@ -62,14 +62,29 @@ ACCOUNT_ID=$(aws sts get-caller-identity --profile $AWS_PROFILE --query Account 
 echo "✅ Authenticated as account: $ACCOUNT_ID (profile: $AWS_PROFILE)"
 echo ""
 
-# Step 1: Build Docker image
-echo "🐳 Step 1: Building Docker image for ARM64..."
+# Step 1: Download GOG CLI for Linux ARM64
+echo "🔨 Step 1: Downloading GOG CLI for Linux ARM64..."
+GOG_VERSION="0.11.0"
+GOG_URL="https://github.com/steipete/gogcli/releases/download/v${GOG_VERSION}/gogcli_${GOG_VERSION}_linux_arm64.tar.gz"
+curl -fsSL "$GOG_URL" | tar -xz -C agent-container gog
+if [ -f agent-container/gog ]; then
+    echo "✅ GOG CLI v${GOG_VERSION} downloaded ($(file agent-container/gog))"
+else
+    echo "⚠️  GOG CLI download failed — gog skill won't work"
+    echo '#!/bin/sh' > agent-container/gog
+    echo 'echo "GOG CLI not available"' >> agent-container/gog
+    chmod +x agent-container/gog
+fi
+echo ""
+
+# Step 2: Build Docker image
+echo "🐳 Step 2: Building Docker image for ARM64..."
 docker buildx build --platform linux/arm64 -t openclaw-personal:latest -f agent-container/Dockerfile .
 echo "✅ Docker image built successfully"
 echo ""
 
-# Step 2: Create ECR repository if it doesn't exist
-echo "📦 Step 2: Setting up ECR repository..."
+# Step 3: Setting up ECR repository...
+echo "📦 Step 3: Setting up ECR repository..."
 if ! aws ecr describe-repositories --repository-names openclaw-personal --profile $AWS_PROFILE --region $AWS_REGION > /dev/null 2>&1; then
     echo "Creating ECR repository..."
     aws ecr create-repository \
@@ -86,8 +101,8 @@ ECR_URI="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/openclaw-personal"
 echo "   Repository URI: $ECR_URI"
 echo ""
 
-# Step 3: Push Docker image to ECR
-echo "🚢 Step 3: Pushing Docker image to ECR..."
+# Step 4: Push Docker image to ECR
+echo "🚢 Step 4: Pushing Docker image to ECR..."
 echo "Authenticating with ECR..."
 aws ecr get-login-password --profile $AWS_PROFILE --region $AWS_REGION | \
     docker login --username AWS --password-stdin $ECR_URI
@@ -98,10 +113,14 @@ docker tag openclaw-personal:latest $ECR_URI:latest
 echo "Pushing image..."
 docker push $ECR_URI:latest
 echo "✅ Docker image pushed successfully"
+
+# Clean up GOG binary (built for linux, not needed locally)
+rm -f agent-container/gog
+
 echo ""
 
-# Step 4: Validate CloudFormation template
-echo "✅ Step 4: Validating CloudFormation template..."
+# Step 5: Validate CloudFormation template
+echo "✅ Step 5: Validating CloudFormation template..."
 aws cloudformation validate-template \
     --template-body file://openclaw-simplified.yaml \
     --profile $AWS_PROFILE \
@@ -109,8 +128,8 @@ aws cloudformation validate-template \
 echo "✅ Template is valid"
 echo ""
 
-# Step 5: Deploy CloudFormation stack
-echo "☁️  Step 5: Deploying CloudFormation stack..."
+# Step 6: Deploy CloudFormation stack
+echo "☁️  Step 6: Deploying CloudFormation stack..."
 # Auto-increment DeploymentVersion to force AgentCore runtime update
 CURRENT_VERSION=$(aws cloudformation describe-stacks \
     --stack-name $STACK_NAME \
@@ -145,8 +164,8 @@ aws cloudformation deploy \
 echo "✅ Stack deployed successfully"
 echo ""
 
-# Step 6: Get stack outputs
-echo "📊 Step 6: Retrieving stack outputs..."
+# Step 7: Get stack outputs
+echo "📊 Step 7: Retrieving stack outputs..."
 RUNTIME_ID=$(aws cloudformation describe-stacks \
     --stack-name $STACK_NAME \
     --profile $AWS_PROFILE \

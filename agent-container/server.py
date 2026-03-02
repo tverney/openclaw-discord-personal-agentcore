@@ -81,6 +81,7 @@ if not OPENCLAW_AUTH_TOKEN:
 STARTUP_TIMEOUT = 30
 SESSIONS_DIR = "/root/.openclaw/agents/main/sessions"
 WORKSPACE_DIR = "/root/.openclaw/workspace"
+CRON_DIR = "/root/.openclaw/agents/main/cron"
 OPENCLAW_DIR = "/root/.openclaw"
 SYNC_INTERVAL_SECONDS = 300  # 5 minutes
 AUTO_APPROVE_INTERVAL = 10  # Check for pairing requests every 10 seconds
@@ -154,8 +155,9 @@ def restore_sessions_from_s3() -> None:
     Syncs two prefixes:
       - openclaw-sessions/  → /root/.openclaw/agents/main/sessions/
       - openclaw-workspace/ → /root/.openclaw/workspace/
+      - openclaw-cron/      → /root/.openclaw/agents/main/cron/
     
-    This preserves conversation history and memory files across container restarts.
+    This preserves conversation history, memory files, and cron jobs across container restarts.
     """
     bucket_name = os.environ.get("SESSION_BACKUP_BUCKET")
     if not bucket_name:
@@ -177,6 +179,7 @@ def restore_sessions_from_s3() -> None:
         for s3_prefix, local_dir in [
             ("openclaw-sessions/", SESSIONS_DIR),
             ("openclaw-workspace/", WORKSPACE_DIR),
+            ("openclaw-cron/", CRON_DIR),
         ]:
             os.makedirs(local_dir, exist_ok=True)
             
@@ -226,11 +229,196 @@ def restore_sessions_from_s3() -> None:
     except Exception as e:
         logger.error(f"Unexpected error during S3 restore: {e}", exc_info=True)
 
+GOG_CONFIG_DIR = "/root/.config/gogcli"
+GOG_S3_PREFIX = "gog-credentials/"
+
+
+def restore_gog_credentials_from_s3() -> None:
+    """Restore GOG (Google Workspace CLI) credentials from S3.
+
+    Downloads:
+      - gog-credentials/credentials.json → GOG OAuth client credentials
+      - gog-credentials/token.json       → GOG refresh token
+
+    After downloading, imports the token into GOG's file-based keyring
+    so the CLI can authenticate without a browser.
+    """
+    bucket_name = os.environ.get("SESSION_BACKUP_BUCKET")
+    gog_account = os.environ.get("GOG_ACCOUNT")
+    if not bucket_name:
+        return
+    if not gog_account:
+        logger.info("GOG_ACCOUNT not set, skipping GOG credential restore")
+        return
+
+    try:
+        s3_client = boto3.client("s3")
+        os.makedirs(GOG_CONFIG_DIR, exist_ok=True)
+
+        # Download credentials.json (OAuth client ID/secret)
+        creds_key = f"{GOG_S3_PREFIX}credentials.json"
+        creds_path = os.path.join(GOG_CONFIG_DIR, "credentials.json")
+        try:
+            s3_client.download_file(bucket_name, creds_key, creds_path)
+            logger.info("Downloaded GOG credentials.json from S3")
+        except ClientError as e:
+            if e.response['Error']['Code'] == '404':
+                logger.info("No GOG credentials.json in S3, skipping")
+                return
+            raise
+
+        # Download token.json (refresh token export)
+        token_key = f"{GOG_S3_PREFIX}token.json"
+        token_path = "/tmp/gog-token-import.json"
+        try:
+            s3_client.download_file(bucket_name, token_key, token_path)
+            logger.info("Downloaded GOG token.json from S3")
+        except ClientError as e:
+            if e.response['Error']['Code'] == '404':
+                logger.info("No GOG token in S3, skipping token import")
+                return
+            raise
+
+        # Configure GOG to use file-based keyring (no macOS Keychain in container)
+        # GOG_KEYRING_PASSWORD is REQUIRED for file keyring in non-interactive context
+        if not os.environ.get("GOG_KEYRING_PASSWORD"):
+            os.environ["GOG_KEYRING_PASSWORD"] = "openclaw-gog-keyring-2024"
+            logger.info("Set GOG_KEYRING_PASSWORD for file-based keyring")
+
+        result = subprocess.run(
+            ["gog", "auth", "keyring", "file"],
+            capture_output=True, text=True, timeout=10,
+        )
+        logger.info(f"GOG keyring file: rc={result.returncode} stdout={result.stdout.strip()} stderr={result.stderr.strip()}")
+
+        # The credentials.json from S3 is already in gog's internal format
+        # (flat {client_id, client_secret}), NOT Google's download format
+        # ({installed: {client_id, ...}}). So we just place it in gog's config dir.
+        logger.info(f"GOG credentials.json placed at {creds_path}")
+
+        # Import the refresh token
+        result = subprocess.run(
+            ["gog", "auth", "tokens", "import", token_path],
+            capture_output=True, text=True, timeout=10,
+            env={**os.environ, "GOG_KEYRING_PASSWORD": os.environ.get("GOG_KEYRING_PASSWORD", "openclaw-gog-keyring-2024")},
+        )
+        logger.info(f"GOG tokens import: rc={result.returncode} stdout={result.stdout.strip()} stderr={result.stderr.strip()}")
+        if result.returncode == 0:
+            logger.info(f"GOG credentials restored for {gog_account}")
+        else:
+            logger.warning(f"GOG token import failed: {result.stderr}")
+
+        # Verify credentials were stored
+        verify = subprocess.run(
+            ["gog", "auth", "list"],
+            capture_output=True, text=True, timeout=10,
+            env={**os.environ, "GOG_KEYRING_PASSWORD": os.environ.get("GOG_KEYRING_PASSWORD", "openclaw-gog-keyring-2024")},
+        )
+        logger.info(f"GOG auth list after restore: {verify.stdout.strip()}")
+
+        # Set default account
+        os.environ["GOG_ACCOUNT"] = gog_account
+
+        # Cleanup temp file
+        try:
+            os.remove(token_path)
+        except OSError:
+            pass
+
+    except ClientError as e:
+        logger.error(f"S3 error restoring GOG credentials: {e}")
+    except Exception as e:
+        logger.error(f"Failed to restore GOG credentials: {e}", exc_info=True)
+
+
+def restore_system_crontab_from_s3() -> None:
+    """Restore system crontab from S3.
+    
+    Openclaw writes cron jobs via the system crontab command, not to files
+    in the cron directory. We back up the raw crontab content to S3 and
+    restore it on container restart so scheduled jobs survive.
+    """
+    bucket_name = os.environ.get("SESSION_BACKUP_BUCKET")
+    if not bucket_name:
+        return
+    
+    try:
+        s3_client = boto3.client("s3")
+        crontab_key = "openclaw-system-crontab/crontab.txt"
+        
+        try:
+            response = s3_client.get_object(Bucket=bucket_name, Key=crontab_key)
+            crontab_content = response["Body"].read().decode("utf-8")
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "NoSuchKey":
+                logger.info("No saved crontab in S3, skipping restore")
+                return
+            raise
+        
+        if not crontab_content.strip():
+            logger.info("Saved crontab is empty, skipping restore")
+            return
+        
+        # Write crontab content to a temp file and load it
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".crontab", delete=False) as f:
+            f.write(crontab_content)
+            tmp_path = f.name
+        
+        try:
+            result = subprocess.run(
+                ["crontab", tmp_path],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0:
+                logger.info(f"Restored system crontab from S3 ({len(crontab_content)} bytes)")
+            else:
+                logger.warning(f"Failed to restore crontab: {result.stderr}")
+        finally:
+            os.remove(tmp_path)
+    
+    except ClientError as e:
+        logger.error(f"S3 error restoring crontab: {e}")
+    except Exception as e:
+        logger.error(f"Failed to restore system crontab: {e}", exc_info=True)
+
+
+def sync_system_crontab_to_s3() -> None:
+    """Back up the current system crontab to S3."""
+    bucket_name = os.environ.get("SESSION_BACKUP_BUCKET")
+    if not bucket_name:
+        return
+    
+    try:
+        result = subprocess.run(
+            ["crontab", "-l"],
+            capture_output=True, text=True, timeout=10,
+        )
+        
+        # crontab -l returns exit code 1 with "no crontab for root" when empty
+        if result.returncode != 0 and "no crontab" in result.stderr.lower():
+            return
+        
+        crontab_content = result.stdout.strip()
+        if not crontab_content:
+            return
+        
+        s3_client = boto3.client("s3")
+        s3_client.put_object(
+            Bucket=bucket_name,
+            Key="openclaw-system-crontab/crontab.txt",
+            Body=crontab_content.encode("utf-8"),
+        )
+        logger.info(f"Backed up system crontab to S3 ({len(crontab_content)} bytes)")
+    
+    except Exception as e:
+        logger.error(f"Failed to back up system crontab: {e}")
+
 
 def sync_sessions_to_s3() -> None:
-    """Sync openclaw state (sessions + workspace) to S3.
-    Uploads session files and workspace files (memory, identity, etc.)
-    so they persist across container restarts.
+    """Sync openclaw state (sessions + workspace + cron) to S3.
+    Uploads session files, workspace files (memory, identity, etc.),
+    and cron jobs so they persist across container restarts.
     
     For MEMORY.md specifically, we only upload if the local version is
     LARGER than the S3 version, to avoid overwriting richer persisted
@@ -259,6 +447,7 @@ def sync_sessions_to_s3() -> None:
         for local_dir, s3_prefix in [
             (SESSIONS_DIR, "openclaw-sessions/"),
             (WORKSPACE_DIR, "openclaw-workspace/"),
+            (CRON_DIR, "openclaw-cron/"),
         ]:
             if not os.path.exists(local_dir):
                 continue
@@ -292,6 +481,9 @@ def sync_sessions_to_s3() -> None:
         
         if synced_count > 0:
             logger.info(f"Synced {synced_count} files to S3")
+        
+        # Also back up system crontab (openclaw writes cron jobs here)
+        sync_system_crontab_to_s3()
     
     except ClientError as e:
         logger.error(f"S3 client error during sync: {e}")
@@ -388,14 +580,20 @@ def start_openclaw() -> subprocess.Popen:
         stderr=subprocess.STDOUT,
     )
     
+    # Write openclaw output to a log file for debugging
+    openclaw_log_path = "/tmp/openclaw-subprocess.log"
+    
     def log_openclaw_output():
-        for line in proc.stdout:
-            decoded = line.decode().rstrip()
-            # Log all openclaw output, including errors
-            if "error" in decoded.lower() or "exception" in decoded.lower() or "failed" in decoded.lower():
-                logger.error(f"[openclaw] {decoded}")
-            else:
-                logger.info(f"[openclaw] {decoded}")
+        with open(openclaw_log_path, "w") as logf:
+            for line in proc.stdout:
+                decoded = line.decode().rstrip()
+                logf.write(decoded + "\n")
+                logf.flush()
+                # Log all openclaw output, including errors
+                if "error" in decoded.lower() or "exception" in decoded.lower() or "failed" in decoded.lower():
+                    logger.error(f"[openclaw] {decoded}")
+                else:
+                    logger.info(f"[openclaw] {decoded}")
     
     threading.Thread(target=log_openclaw_output, daemon=True).start()
     
@@ -502,6 +700,7 @@ class AgentCoreHandler(BaseHTTPRequestHandler):
         
         message = payload.get("message", "")
         channel = payload.get("channel", "default")
+        history = payload.get("history")  # Optional conversation history from Discord threads
         
         # Support status check via invocations
         if payload.get("action") == "status":
@@ -511,6 +710,142 @@ class AgentCoreHandler(BaseHTTPRequestHandler):
                 "discord_bot": "running" if bot_alive else "dead",
                 "deployment_version": os.environ.get("DEPLOYMENT_VERSION", "unknown")
             })
+            return
+        
+        # Diagnostic action — returns debug info about each subsystem
+        if payload.get("action") == "diagnose":
+            diag = {"deployment_version": os.environ.get("DEPLOYMENT_VERSION", "unknown")}
+            # Check openclaw health
+            try:
+                r = requests.get(
+                    f"{OPENCLAW_URL}/health",
+                    headers={"Authorization": f"Bearer {OPENCLAW_AUTH_TOKEN}"},
+                    timeout=5,
+                )
+                diag["openclaw_health"] = f"status={r.status_code}"
+            except Exception as e:
+                diag["openclaw_health"] = f"error: {e}"
+            # Check S3 access
+            try:
+                s3 = boto3.client("s3")
+                bucket = os.environ.get("SESSION_BACKUP_BUCKET", "")
+                if bucket:
+                    s3.head_bucket(Bucket=bucket)
+                    diag["s3_bucket"] = f"ok ({bucket})"
+                else:
+                    diag["s3_bucket"] = "not configured"
+            except Exception as e:
+                diag["s3_bucket"] = f"error: {e}"
+            # Check memory load
+            try:
+                mem = load_memory_from_s3()
+                diag["memory_load"] = f"ok ({len(mem)} bytes)"
+            except Exception as e:
+                diag["memory_load"] = f"error: {e}"
+            # Check openclaw chat endpoint
+            try:
+                r = requests.post(
+                    f"{OPENCLAW_URL}/v1/chat/completions",
+                    json={"model": DEFAULT_MODEL, "messages": [{"role": "user", "content": "ping"}]},
+                    headers={"Content-Type": "application/json", "Authorization": f"Bearer {OPENCLAW_AUTH_TOKEN}"},
+                    timeout=30,
+                )
+                diag["openclaw_chat"] = f"status={r.status_code}, body={r.text[:300]}"
+            except Exception as e:
+                diag["openclaw_chat"] = f"error: {e}"
+            # Check error log
+            try:
+                with open('/tmp/openclaw-errors.log', 'r') as f:
+                    diag["error_log"] = ''.join(f.readlines()[-20:])
+            except FileNotFoundError:
+                diag["error_log"] = "no log file"
+            # Check skills directory
+            try:
+                import glob
+                diag["skills_dir"] = str(glob.glob("/app/skills/**/*", recursive=True))
+            except Exception as e:
+                diag["skills_dir"] = f"error: {e}"
+            # Check resolved openclaw.json (after env var substitution)
+            try:
+                with open('/root/.openclaw/openclaw.json', 'r') as f:
+                    resolved = f.read()
+                diag["resolved_config"] = resolved[:1000]
+            except Exception as e:
+                diag["resolved_config"] = f"error: {e}"
+            # Check openclaw process status
+            try:
+                import subprocess as sp
+                ps = sp.run(["ps", "aux"], capture_output=True, text=True, timeout=5)
+                openclaw_procs = [l for l in ps.stdout.splitlines() if "openclaw" in l.lower()]
+                diag["openclaw_processes"] = openclaw_procs if openclaw_procs else "no openclaw processes found"
+            except Exception as e:
+                diag["openclaw_processes"] = f"error: {e}"
+            # Check bundled skills directory
+            try:
+                import glob
+                bundled = glob.glob("/openclaw-app/skills/**/*", recursive=True)
+                diag["bundled_skills"] = str(bundled[:30])
+            except Exception as e:
+                diag["bundled_skills"] = f"error: {e}"
+            # Check openclaw subprocess log
+            try:
+                with open('/tmp/openclaw-subprocess.log', 'r') as f:
+                    diag["openclaw_log"] = ''.join(f.readlines()[-30:])
+            except FileNotFoundError:
+                diag["openclaw_log"] = "no subprocess log"
+            except Exception as e:
+                diag["openclaw_log"] = f"error: {e}"
+            # Check cron directory for persisted cron jobs
+            try:
+                import glob
+                cron_files = glob.glob(f"{CRON_DIR}/**/*", recursive=True)
+                if cron_files:
+                    diag["cron_dir"] = str(cron_files)
+                else:
+                    diag["cron_dir"] = f"empty or missing ({CRON_DIR})"
+                # Also check broader openclaw agent dir for cron-like data
+                agent_dir = "/root/.openclaw/agents/main"
+                if os.path.exists(agent_dir):
+                    agent_contents = []
+                    for item in os.listdir(agent_dir):
+                        item_path = os.path.join(agent_dir, item)
+                        if os.path.isdir(item_path):
+                            sub_count = len(os.listdir(item_path))
+                            agent_contents.append(f"{item}/ ({sub_count} items)")
+                        else:
+                            agent_contents.append(item)
+                    diag["agent_main_dir"] = agent_contents
+            except Exception as e:
+                diag["cron_dir"] = f"error: {e}"
+            # List cron jobs via openclaw CLI
+            try:
+                result = subprocess.run(
+                    ["openclaw", "cron", "list"],
+                    capture_output=True, text=True, timeout=10,
+                    env={**os.environ, "OPENCLAW_CONFIG_PATH": "/root/.openclaw/openclaw.json"},
+                )
+                diag["cron_list"] = result.stdout.strip() or result.stderr.strip() or "empty"
+            except Exception as e:
+                diag["cron_list"] = f"error: {e}"
+            # Check system crontab
+            try:
+                result = subprocess.run(
+                    ["crontab", "-l"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                diag["system_crontab"] = result.stdout.strip() or result.stderr.strip() or "empty"
+            except Exception as e:
+                diag["system_crontab"] = f"error: {e}"
+            # Check if cron daemon is running
+            try:
+                result = subprocess.run(
+                    ["pgrep", "-x", "cron"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                diag["cron_daemon"] = f"running (pid={result.stdout.strip()})" if result.returncode == 0 else "not running"
+            except Exception as e:
+                diag["cron_daemon"] = f"error: {e}"
+            self._respond(200, diag)
             return
         
         # Select model based on channel
@@ -542,11 +877,22 @@ class AgentCoreHandler(BaseHTTPRequestHandler):
                     f"User message: {message}"
                 )
             
-            messages = [{"role": "user", "content": effective_message}]
+            messages = []
+            
+            # Include conversation history from Discord thread if provided
+            if history and isinstance(history, list):
+                for entry in history[-10:]:  # Last 10 messages max
+                    role = entry.get("role", "user")
+                    content = entry.get("content", "")
+                    if role in ("user", "assistant") and content:
+                        messages.append({"role": role, "content": content})
+            
+            messages.append({"role": "user", "content": effective_message})
             
             logger.info(
                 f"Sending request to openclaw: model={selected_model}, "
                 f"message_length={len(effective_message)}, channel={channel}, "
+                f"history_messages={len(messages)-1}, "
                 f"memory_injected={'yes' if memory_context else 'no'}"
             )
             
@@ -688,7 +1034,42 @@ def main():
     # Pre-create directories
     os.makedirs(SESSIONS_DIR, exist_ok=True)
     os.makedirs(WORKSPACE_DIR, exist_ok=True)
+    os.makedirs(CRON_DIR, exist_ok=True)
     os.makedirs(OPENCLAW_DIR, exist_ok=True)
+    
+    # Start cron daemon — openclaw's cron feature uses system crontab.
+    # In Debian slim containers, cron needs explicit foreground start and
+    # the /var/run/crond.pid file must be writable.
+    try:
+        os.makedirs("/var/run", exist_ok=True)
+        # Try 'cron' first (Debian), fall back to 'crond' (Alpine)
+        for cron_bin in ["cron", "crond", "/usr/sbin/cron"]:
+            try:
+                subprocess.run(
+                    [cron_bin],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=5,
+                )
+                # Verify it's actually running
+                verify = subprocess.run(
+                    ["pgrep", "-x", "cron"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if verify.returncode == 0:
+                    logger.info(f"cron daemon started via '{cron_bin}' (pid={verify.stdout.strip()})")
+                    break
+                else:
+                    logger.warning(f"'{cron_bin}' ran but daemon not detected, trying next...")
+            except FileNotFoundError:
+                continue
+            except subprocess.TimeoutExpired:
+                logger.warning(f"'{cron_bin}' timed out, trying next...")
+                continue
+        else:
+            logger.warning("No cron binary found — openclaw cron jobs won't work")
+    except Exception as e:
+        logger.warning(f"Failed to start cron daemon: {e}")
     
     proc = start_openclaw()
     wait_for_openclaw(STARTUP_TIMEOUT)
@@ -704,6 +1085,12 @@ def main():
     
     logger.info("Restoring state from S3 (overwriting openclaw defaults)...")
     restore_sessions_from_s3()
+    
+    # Restore system crontab from S3 (openclaw writes cron jobs via crontab)
+    restore_system_crontab_from_s3()
+    
+    # Restore GOG (Google Workspace) credentials if configured
+    restore_gog_credentials_from_s3()
     
     _log_workspace_state("AFTER restore (S3 data)")
     

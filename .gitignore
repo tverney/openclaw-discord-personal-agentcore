@@ -66,6 +66,13 @@ yarn-error.log*
 *.pem
 *.key
 
+# Skills config state (contains API keys)
+.openclaw-skills-state.json
+agent-container/.openclaw-skills-state.json
+
+# Built binaries
+agent-container/gog
+
 # CloudFormation
 .cfn-lint-ignore
 
@@ -75,5 +82,8 @@ sessions/
 
 # Local development artifacts
 images/
-skills/
 src/
+
+# Skills — ignore top-level community skills folder, but keep agent-container custom skills
+skills/
+!agent-container/skills/

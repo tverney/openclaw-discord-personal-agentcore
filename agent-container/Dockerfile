@@ -4,13 +4,15 @@ FROM ghcr.io/openclaw/openclaw:latest AS openclaw-base
 # Stage 2: Python 3.12 slim runtime with Node.js
 FROM python:3.12-slim
 
-# Install security updates, Node.js 22.x, and curl
+# Install security updates, Node.js 22.x, curl, and cron
 RUN apt-get update && \
     apt-get upgrade -y && \
     apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
     gnupg \
+    cron \
+    procps \
     && mkdir -p /etc/apt/keyrings \
     && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
     && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" | tee /etc/apt/sources.list.d/nodesource.list \
@@ -21,6 +23,10 @@ RUN apt-get update && \
 
 # Copy openclaw application from base image
 COPY --from=openclaw-base /app /openclaw-app
+
+# Copy GOG CLI binary (built locally via deploy.sh)
+COPY agent-container/gog /usr/local/bin/gog
+RUN chmod +x /usr/local/bin/gog
 
 # Create openclaw wrapper script
 RUN echo '#!/bin/sh\nexec node /openclaw-app/openclaw.mjs "$@"' > /usr/local/bin/openclaw \
@@ -35,6 +41,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy Agent Container application files
 COPY agent-container/server.py .
 COPY agent-container/openclaw.json .
+
+# Copy custom skills into openclaw's bundled skills directory
+COPY agent-container/skills/ /openclaw-app/skills/
+RUN chmod +x /openclaw-app/skills/tavily/tavily_search.py
 
 # Create session storage directory
 RUN mkdir -p /tmp/openclaw/sessions
