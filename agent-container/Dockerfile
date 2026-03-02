@@ -40,9 +40,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY agent-container/server.py .
 COPY agent-container/openclaw.json .
 
-# Copy custom skills (tavily web search)
-COPY agent-container/skills/ /app/skills/
-RUN chmod +x /app/skills/tavily/tavily_search.py
+# Copy custom skills into openclaw's bundled skills directory
+COPY agent-container/skills/ /openclaw-app/skills/
+RUN chmod +x /openclaw-app/skills/tavily/tavily_search.py
 
 # Create session storage directory
 RUN mkdir -p /tmp/openclaw/sessions

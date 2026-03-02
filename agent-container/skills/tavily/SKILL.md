@@ -29,27 +29,27 @@ AI-optimized web search via the Tavily API. Returns concise, structured results.
 
 ### Basic search
 ```bash
-python3 /app/skills/tavily/tavily_search.py "your search query"
+python3 /openclaw-app/skills/tavily/tavily_search.py "your search query"
 ```
 
 ### More results
 ```bash
-python3 /app/skills/tavily/tavily_search.py "query" --max-results 10
+python3 /openclaw-app/skills/tavily/tavily_search.py "query" --max-results 10
 ```
 
 ### Deep research mode (slower but more comprehensive)
 ```bash
-python3 /app/skills/tavily/tavily_search.py "complex topic" --depth advanced
+python3 /openclaw-app/skills/tavily/tavily_search.py "complex topic" --depth advanced
 ```
 
 ### News only (recent events)
 ```bash
-python3 /app/skills/tavily/tavily_search.py "latest news topic" --topic news
+python3 /openclaw-app/skills/tavily/tavily_search.py "latest news topic" --topic news
 ```
 
 ### Filter by domain
 ```bash
-python3 /app/skills/tavily/tavily_search.py "query" --include-domains "python.org,docs.python.org"
+python3 /openclaw-app/skills/tavily/tavily_search.py "query" --include-domains "python.org,docs.python.org"
 ```
 
 ## Environment
@@ -66,11 +66,11 @@ Returns JSON with:
 
 ```bash
 # Quick fact check
-python3 /app/skills/tavily/tavily_search.py "population of Brazil 2026"
+python3 /openclaw-app/skills/tavily/tavily_search.py "population of Brazil 2026"
 
 # Tech research
-python3 /app/skills/tavily/tavily_search.py "Python 3.13 new features" --depth advanced
+python3 /openclaw-app/skills/tavily/tavily_search.py "Python 3.13 new features" --depth advanced
 
 # Recent news
-python3 /app/skills/tavily/tavily_search.py "AI news this week" --topic news --max-results 5
+python3 /openclaw-app/skills/tavily/tavily_search.py "AI news this week" --topic news --max-results 5
 ```
