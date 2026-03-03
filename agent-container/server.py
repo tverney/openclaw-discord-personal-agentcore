@@ -331,6 +331,55 @@ def restore_gog_credentials_from_s3() -> None:
         logger.error(f"Failed to restore GOG credentials: {e}", exc_info=True)
 
 
+ALEXA_CONFIG_DIR = "/root/.alexa-cli"
+ALEXA_S3_PREFIX = "alexa-credentials/"
+
+
+def restore_alexa_credentials_from_s3() -> None:
+    """Restore Alexa CLI credentials from S3.
+
+    Downloads:
+      - alexa-credentials/config.json → ~/.alexa-cli/config.json
+
+    The config.json contains the refresh token from `alexacli auth`.
+    Token is valid ~14 days before re-authentication is needed.
+    """
+    bucket_name = os.environ.get("SESSION_BACKUP_BUCKET")
+    if not bucket_name:
+        return
+
+    try:
+        s3_client = boto3.client("s3")
+        os.makedirs(ALEXA_CONFIG_DIR, exist_ok=True)
+
+        config_key = f"{ALEXA_S3_PREFIX}config.json"
+        config_path = os.path.join(ALEXA_CONFIG_DIR, "config.json")
+        try:
+            s3_client.download_file(bucket_name, config_key, config_path)
+            logger.info("Restored Alexa CLI credentials from S3")
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "404":
+                logger.info("No Alexa CLI credentials in S3, skipping")
+                return
+            raise
+
+        # Verify the config looks valid
+        try:
+            with open(config_path, "r") as f:
+                config = json.load(f)
+            if config.get("refresh_token") or config.get("cookies"):
+                logger.info("Alexa CLI config restored (has auth data)")
+            else:
+                logger.warning("Alexa CLI config restored but may be missing auth data")
+        except (json.JSONDecodeError, KeyError) as e:
+            logger.warning(f"Alexa CLI config may be invalid: {e}")
+
+    except ClientError as e:
+        logger.error(f"S3 error restoring Alexa credentials: {e}")
+    except Exception as e:
+        logger.error(f"Failed to restore Alexa credentials: {e}", exc_info=True)
+
+
 def restore_system_crontab_from_s3() -> None:
     """Restore system crontab from S3.
     
@@ -1497,6 +1546,9 @@ def main():
     
     # Restore GOG (Google Workspace) credentials if configured
     restore_gog_credentials_from_s3()
+    
+    # Restore Alexa CLI credentials if uploaded
+    restore_alexa_credentials_from_s3()
     
     _log_workspace_state("AFTER restore (S3 data)")
     

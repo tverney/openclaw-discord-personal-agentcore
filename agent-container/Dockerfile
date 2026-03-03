@@ -29,6 +29,10 @@ COPY --from=openclaw-base /app /openclaw-app
 COPY agent-container/gog /usr/local/bin/gog
 RUN chmod +x /usr/local/bin/gog
 
+# Copy Alexa CLI binary (cross-compiled via deploy.sh)
+COPY agent-container/alexacli /usr/local/bin/alexacli
+RUN chmod +x /usr/local/bin/alexacli
+
 # Create openclaw wrapper script
 RUN echo '#!/bin/sh\nexec node /openclaw-app/openclaw.mjs "$@"' > /usr/local/bin/openclaw \
     && chmod +x /usr/local/bin/openclaw

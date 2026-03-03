@@ -70,6 +70,9 @@
       "weather": {
         "enabled": true
       },
+      "alexa-cli": {
+        "enabled": true
+      },
       "tmux": {
         "enabled": true
       }
