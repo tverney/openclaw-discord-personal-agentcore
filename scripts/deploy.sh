@@ -77,6 +77,39 @@ else
 fi
 echo ""
 
+# Step 1b: Build Alexa CLI for Linux ARM64
+echo "🔊 Step 1b: Building Alexa CLI for Linux ARM64..."
+if command -v go &> /dev/null; then
+    ALEXA_TMP=$(mktemp -d)
+    echo "   Downloading and cross-compiling (this may take 1-2 min on first run)..."
+    git clone --depth 1 https://github.com/buddyh/alexa-cli.git "$ALEXA_TMP/alexa-cli" 2>&1
+    if [ -d "$ALEXA_TMP/alexa-cli" ]; then
+        GOOS=linux GOARCH=arm64 GOPROXY=direct \
+            go build -C "$ALEXA_TMP/alexa-cli" -o "$(pwd)/agent-container/alexacli" ./cmd/alexa
+        ALEXA_RC=$?
+        if [ $ALEXA_RC -eq 0 ] && [ -f agent-container/alexacli ]; then
+            echo "✅ Alexa CLI built ($(file agent-container/alexacli))"
+        else
+            echo "⚠️  Alexa CLI build failed (exit code $ALEXA_RC) — alexa skill won't work"
+            echo '#!/bin/sh' > agent-container/alexacli
+            echo 'echo "alexacli not available"' >> agent-container/alexacli
+            chmod +x agent-container/alexacli
+        fi
+    else
+        echo "⚠️  Failed to clone alexa-cli repo"
+        echo '#!/bin/sh' > agent-container/alexacli
+        echo 'echo "alexacli not available"' >> agent-container/alexacli
+        chmod +x agent-container/alexacli
+    fi
+    rm -rf "$ALEXA_TMP"
+else
+    echo "⚠️  Go not installed — alexa skill won't work (install: brew install go)"
+    echo '#!/bin/sh' > agent-container/alexacli
+    echo 'echo "alexacli not available — Go was not installed at build time"' >> agent-container/alexacli
+    chmod +x agent-container/alexacli
+fi
+echo ""
+
 # Step 2: Build Docker image
 echo "🐳 Step 2: Building Docker image for ARM64..."
 docker buildx build --platform linux/arm64 -t openclaw-personal:latest -f agent-container/Dockerfile .
@@ -116,6 +149,7 @@ echo "✅ Docker image pushed successfully"
 
 # Clean up GOG binary (built for linux, not needed locally)
 rm -f agent-container/gog
+rm -f agent-container/alexacli
 
 echo ""
 
