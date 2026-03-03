@@ -220,6 +220,22 @@ Resources:
                   - logs:PutLogEvents
                   - logs:DescribeLogStreams
                 Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/ec2/discord-bot/*"
+        - PolicyName: SecretsManagerAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref OpenClawSecrets
+        - PolicyName: KmsAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource: !GetAtt OpenClawKmsKey.Arn
       Tags:
         - Key: Project
           Value: OpenClaw
@@ -268,9 +284,19 @@ Resources:
           echo "Timestamp: $(date)"
 
           dnf update -y
-          dnf install -y python3 python3-pip
+          dnf install -y python3 python3-pip jq
 
           pip3 install "discord.py>=2.3.0" "boto3>=1.38.0"
+
+          # Fetch Discord bot token from Secrets Manager
+          SECRETS_ARN="${OpenClawSecrets}"
+          SECRET_JSON=$(aws secretsmanager get-secret-value --secret-id "$SECRETS_ARN" --region ${AWS::Region} --query SecretString --output text)
+          DISCORD_TOKEN=$(echo "$SECRET_JSON" | jq -r '.DISCORD_BOT_TOKEN')
+          if [ -z "$DISCORD_TOKEN" ] || [ "$DISCORD_TOKEN" = "null" ]; then
+            echo "ERROR: Failed to fetch DISCORD_BOT_TOKEN from Secrets Manager"
+            exit 1
+          fi
+          echo "Successfully fetched Discord token from Secrets Manager"
 
           mkdir -p /opt/discord-bot
           cd /opt/discord-bot
@@ -411,10 +437,12 @@ Resources:
           EOFBOT
 
           cat > /opt/discord-bot/.env << EOFENV
-          DISCORD_BOT_TOKEN=${DiscordBotToken}
+          DISCORD_BOT_TOKEN=$DISCORD_TOKEN
           AGENTCORE_RUNTIME_ARN=arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:runtime/${AgentCoreRuntime.AgentRuntimeId}
           AWS_REGION=${AWS::Region}
           EOFENV
+
+          chmod 600 /opt/discord-bot/.env
 
           cat > /etc/systemd/system/discord-bot.service << 'EOFSVC'
           [Unit]
@@ -575,7 +603,8 @@ Resources:
         {
           "OPENCLAW_AUTH_TOKEN": "${OpenClawAuthToken}",
           "TAVILY_API_KEY": "${TavilyApiKey}",
-          "GOG_KEYRING_PASSWORD": "${GogKeyringPassword}"
+          "GOG_KEYRING_PASSWORD": "${GogKeyringPassword}",
+          "DISCORD_BOT_TOKEN": "${DiscordBotToken}"
         }
       Tags:
         - Key: Project
