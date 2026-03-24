@@ -39,7 +39,7 @@ echo "✅ Runtime ARN: $RUNTIME_ARN"
 echo ""
 echo "🔑 Fetching Discord token from Secrets Manager..."
 DISCORD_BOT_TOKEN=$(aws secretsmanager get-secret-value \
-    --secret-id ${STACK_NAME}-secrets \
+    --secret-id ${STACK_NAME}/credentials \
     --region $AWS_REGION \
     --query 'SecretString' --output text | python3 -c "import sys,json; print(json.load(sys.stdin).get('DISCORD_BOT_TOKEN',''))")
 
