@@ -135,6 +135,8 @@ Or open the OpenClaw Web UI via SSM port forwarding to connect WhatsApp, Telegra
 
 Prefer a guided experience? [Kiro](https://kiro.dev) walks you through deployment conversationally — just open this repo as a workspace and say "help me deploy OpenClaw".
 
+→ [Kiro Deployment Guide](QUICK_START_KIRO.md)
+
 ## After Deployment
 
 ```bash
@@ -202,7 +204,3 @@ aws ssm send-command --instance-ids YOUR_INSTANCE_ID \
 ## License
 
 See [LICENSE](LICENSE) for details.
-
----
-
-Built with [Kiro](https://kiro.dev) 🦞
