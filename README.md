@@ -201,6 +201,13 @@ aws ssm send-command --instance-ids YOUR_INSTANCE_ID \
 - [Inference Profiles](docs/INFERENCE-PROFILES.md)
 - [Security](docs/SECURITY.md)
 
+## Resources
+
+- [OpenClaw Docs](https://docs.openclaw.ai) · [OpenClaw GitHub](https://github.com/openclaw/openclaw)
+- [Amazon Bedrock Docs](https://docs.aws.amazon.com/bedrock/) · [AgentCore Runtime](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-get-started.html)
+- [OpenClaw on Lightsail](https://docs.aws.amazon.com/lightsail/latest/userguide/amazon-lightsail-quick-start-guide-openclaw.html) (official AWS guide)
+- [Original AWS Sample](https://github.com/aws-samples/sample-OpenClaw-on-AWS-with-Bedrock) (forked from)
+
 ## License
 
 See [LICENSE](LICENSE) for details.
