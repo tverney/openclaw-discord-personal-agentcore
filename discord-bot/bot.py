@@ -19,6 +19,16 @@ client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 _processing = set()
 
+async def setup_hook():
+    logger.info("Syncing slash commands...")
+    try:
+        synced = await tree.sync()
+        logger.info(f"Synced {len(synced)} slash commands: {[c.name for c in synced]}")
+    except Exception as e:
+        logger.error(f"Failed to sync slash commands: {e}", exc_info=True)
+
+client.setup_hook = setup_hook
+
 bedrock_client = boto3.client(
     "bedrock-agentcore", region_name=AWS_REGION,
     config=Config(read_timeout=120, connect_timeout=10, retries={"max_attempts": 2}),
@@ -56,11 +66,10 @@ def invoke_runtime(message, channel="discord_general", history=None):
 async def on_ready():
     logger.info(f"Logged in as {client.user} (id={client.user.id})")
     logger.info(f"Guilds: {[g.name for g in client.guilds]}")
-    try:
-        synced = await tree.sync()
-        logger.info(f"Synced {len(synced)} slash commands")
-    except Exception as e:
-        logger.error(f"Failed to sync slash commands: {e}")
+
+@client.event
+async def on_interaction(interaction: discord.Interaction):
+    await tree.interaction(interaction)
 
 async def _handle_slash(interaction: discord.Interaction, command: str):
     """Shared handler for slash commands that forward to OpenClaw."""
