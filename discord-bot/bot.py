@@ -5,6 +5,7 @@ import boto3
 from botocore.config import Config
 import discord
 from discord import app_commands
+from discord.ext import commands
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
 logger = logging.getLogger(__name__)
@@ -15,19 +16,8 @@ AWS_REGION = os.environ.get("AWS_REGION", "us-east-2")
 
 intents = discord.Intents.default()
 intents.message_content = True
-client = discord.Client(intents=intents)
-tree = app_commands.CommandTree(client)
+bot = commands.Bot(command_prefix="!", intents=intents)
 _processing = set()
-
-async def setup_hook():
-    logger.info("Syncing slash commands...")
-    try:
-        synced = await tree.sync()
-        logger.info(f"Synced {len(synced)} slash commands: {[c.name for c in synced]}")
-    except Exception as e:
-        logger.error(f"Failed to sync slash commands: {e}", exc_info=True)
-
-client.setup_hook = setup_hook
 
 bedrock_client = boto3.client(
     "bedrock-agentcore", region_name=AWS_REGION,
@@ -62,14 +52,15 @@ def invoke_runtime(message, channel="discord_general", history=None):
         return data["message"]
     return json.dumps(data, indent=2)
 
-@client.event
+@bot.event
 async def on_ready():
-    logger.info(f"Logged in as {client.user} (id={client.user.id})")
-    logger.info(f"Guilds: {[g.name for g in client.guilds]}")
-
-@client.event
-async def on_interaction(interaction: discord.Interaction):
-    await tree.interaction(interaction)
+    logger.info(f"Logged in as {bot.user} (id={bot.user.id})")
+    logger.info(f"Guilds: {[g.name for g in bot.guilds]}")
+    try:
+        synced = await bot.tree.sync()
+        logger.info(f"Synced {len(synced)} slash commands: {[c.name for c in synced]}")
+    except Exception as e:
+        logger.error(f"Failed to sync slash commands: {e}", exc_info=True)
 
 async def _handle_slash(interaction: discord.Interaction, command: str):
     """Shared handler for slash commands that forward to OpenClaw."""
@@ -91,19 +82,19 @@ async def _handle_slash(interaction: discord.Interaction, command: str):
         logger.error(f"Slash command error: {e}", exc_info=True)
         await interaction.followup.send("Sorry, something went wrong.")
 
-@tree.command(name="status", description="Show OpenClaw model, tokens used, and cost")
+@bot.tree.command(name="status", description="Show OpenClaw model, tokens used, and cost")
 async def cmd_status(interaction: discord.Interaction):
     await _handle_slash(interaction, "status")
 
-@tree.command(name="new", description="Start a fresh conversation")
+@bot.tree.command(name="new", description="Start a fresh conversation")
 async def cmd_new(interaction: discord.Interaction):
     await _handle_slash(interaction, "new")
 
-@tree.command(name="help", description="List all OpenClaw commands")
+@bot.tree.command(name="help", description="List all OpenClaw commands")
 async def cmd_help(interaction: discord.Interaction):
     await _handle_slash(interaction, "help")
 
-@tree.command(name="think", description="Set reasoning mode (high/medium/low/off)")
+@bot.tree.command(name="think", description="Set reasoning mode (high/medium/low/off)")
 @app_commands.describe(level="Reasoning level")
 @app_commands.choices(level=[
     app_commands.Choice(name="high", value="high"),
@@ -114,7 +105,7 @@ async def cmd_help(interaction: discord.Interaction):
 async def cmd_think(interaction: discord.Interaction, level: app_commands.Choice[str]):
     await _handle_slash(interaction, f"think {level.value}")
 
-@tree.command(name="ask", description="Ask OpenClaw anything")
+@bot.tree.command(name="ask", description="Ask OpenClaw anything")
 @app_commands.describe(message="Your message")
 async def cmd_ask(interaction: discord.Interaction, message: str):
     await interaction.response.defer()
@@ -135,13 +126,13 @@ async def cmd_ask(interaction: discord.Interaction, message: str):
         logger.error(f"Slash command error: {e}", exc_info=True)
         await interaction.followup.send("Sorry, something went wrong.")
 
-@client.event
+@bot.event
 async def on_message(message):
-    if message.author.bot or message.author.id == client.user.id:
+    if message.author.bot or message.author.id == bot.user.id:
         return
-    bot_id = str(client.user.id)
+    bot_id = str(bot.user.id)
     is_mentioned = (
-        client.user in message.mentions
+        bot.user in message.mentions
         or f"<@{bot_id}>" in message.content
         or f"<@!{bot_id}>" in message.content
     )
@@ -183,7 +174,7 @@ async def on_message(message):
             for m in msgs:
                 if m.id == message.id:
                     continue
-                role = "assistant" if m.author.id == client.user.id else "user"
+                role = "assistant" if m.author.id == bot.user.id else "user"
                 content = re.sub(r"<@!?\d+>", "", m.content).strip()
                 if content:
                     history.append({"role": role, "content": content})
@@ -210,4 +201,4 @@ async def on_message(message):
     finally:
         _processing.discard(chan_id)
 
-client.run(DISCORD_BOT_TOKEN, log_handler=None)
+bot.run(DISCORD_BOT_TOKEN, log_handler=None)
