@@ -1,4 +1,4 @@
-# AgentCore OpenClaw Personal Bot — Serverless AI Assistant on AWS
+# Deploy personal OpenClaw on AWS — Serverless, ~$9/month, Discord ready
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![AWS CloudFormation](https://img.shields.io/badge/AWS-CloudFormation-orange?logo=amazonaws)](openclaw-simplified.yaml)
