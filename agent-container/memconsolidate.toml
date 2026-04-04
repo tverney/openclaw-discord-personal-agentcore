@@ -5,8 +5,8 @@ memory_directory = "/root/.openclaw/workspace"
 session_directory = "/root/.openclaw/agents/main/sessions"
 
 # Consolidation settings
-min_hours = 24
-min_sessions = 5
+min_hours = 1
+min_sessions = 3
 poll_interval_ms = 60000
 max_session_content_chars = 2000
 max_memory_content_chars = 4000
