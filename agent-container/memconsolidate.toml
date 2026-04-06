@@ -1,21 +1,25 @@
 # Memory consolidation and extraction daemon for OpenClaw
 # https://github.com/tverney/agent-memory-daemon
+# Cost-optimized config for Haiku 4.5 (~$0.25/month)
 
 memory_directory = "/root/.openclaw/workspace"
 session_directory = "/root/.openclaw/agents/main/sessions"
 
-# Consolidation settings
-min_hours = 1
-min_sessions = 3
+# Consolidation settings (cost-optimized)
+min_hours = 48
+min_sessions = 8
 poll_interval_ms = 60000
-max_session_content_chars = 2000
-max_memory_content_chars = 4000
+max_session_content_chars = 1000
+max_memory_content_chars = 2000
+max_prompt_chars = 40000
+max_memory_files = 50
+max_files_per_batch = 10
 max_index_lines = 200
 max_index_bytes = 25000
 dry_run = false
 
-# Extraction settings (disabled — cost optimization, re-enable when chunking is stable)
-extraction_enabled = false
+# Extraction settings (cost-optimized)
+extraction_enabled = true
 extraction_interval_ms = 300000
 max_extraction_session_chars = 2000
 
