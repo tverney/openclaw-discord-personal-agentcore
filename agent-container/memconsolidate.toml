@@ -14,9 +14,9 @@ max_index_lines = 200
 max_index_bytes = 25000
 dry_run = false
 
-# Extraction settings
-extraction_enabled = true
-extraction_interval_ms = 60000
+# Extraction settings (disabled — cost optimization, re-enable when chunking is stable)
+extraction_enabled = false
+extraction_interval_ms = 300000
 max_extraction_session_chars = 2000
 
 [llm_backend]
