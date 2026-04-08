@@ -988,6 +988,14 @@ class AgentCoreHandler(BaseHTTPRequestHandler):
                 "discord_bot": "running" if discord_bot_proc and (hasattr(discord_bot_proc, 'is_alive') and discord_bot_proc.is_alive() or hasattr(discord_bot_proc, 'poll') and discord_bot_proc.poll() is None) else "dead",
                 "deployment_version": os.environ.get("DEPLOYMENT_VERSION", "unknown")
             })
+        elif self.path == "/cost":
+            daily = getattr(AgentCoreHandler, "_daily_cost", {"date": "n/a", "total": 0.0, "requests": 0})
+            self._respond(200, {
+                "date": daily["date"],
+                "daily_cost": round(daily["total"], 4),
+                "daily_requests": daily["requests"],
+                "note": "Resets on container restart or new day. Based on actual token usage from API responses.",
+            })
         elif self.path == "/errors":
             # Return recent errors from log file
             try:
@@ -1461,16 +1469,47 @@ class AgentCoreHandler(BaseHTTPRequestHandler):
             result = resp.json()
             duration_ms = int(time.time() * 1000) - start_ms
             
-            # Estimate cost (rough approximation)
-            # Nova Lite: ~$0.00006 per 1K input tokens, ~$0.00024 per 1K output tokens
-            # Claude Sonnet 4.5: ~$0.003 per 1K input tokens, ~$0.015 per 1K output tokens
-            input_tokens = len(message.split()) * 1.3  # Rough estimate
-            output_tokens = len(str(result).split()) * 1.3  # Rough estimate
+            # Extract real token usage from OpenClaw response
+            usage = result.get("usage", {})
+            input_tokens = usage.get("prompt_tokens", 0)
+            output_tokens = usage.get("completion_tokens", 0)
+            cache_read = usage.get("cache_read_input_tokens", 0) or usage.get("cacheRead", 0)
+            cache_write = usage.get("cache_creation_input_tokens", 0) or usage.get("cacheWrite", 0)
             
-            if "nova" in selected_model.lower():
-                cost_estimate = (input_tokens / 1000 * 0.00006) + (output_tokens / 1000 * 0.00024)
-            else:
-                cost_estimate = (input_tokens / 1000 * 0.003) + (output_tokens / 1000 * 0.015)
+            # Calculate cost using actual Bedrock pricing
+            # Haiku 4.5: $1.00/1M input, $5.00/1M output, $0.10/1M cache read, $1.25/1M cache write
+            PRICING = {
+                "haiku": {"input": 1.00, "output": 5.00, "cache_read": 0.10, "cache_write": 1.25},
+                "sonnet": {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_write": 3.75},
+                "nova-lite": {"input": 0.06, "output": 0.24, "cache_read": 0.006, "cache_write": 0.06},
+                "nova-pro": {"input": 0.80, "output": 3.20, "cache_read": 0.08, "cache_write": 0.80},
+            }
+            model_key = "haiku"  # default
+            model_lower = selected_model.lower()
+            for key in PRICING:
+                if key in model_lower:
+                    model_key = key
+                    break
+            prices = PRICING[model_key]
+            
+            # Non-cached input = total input - cache_read - cache_write
+            regular_input = max(0, input_tokens - cache_read - cache_write)
+            cost_estimate = (
+                (regular_input / 1_000_000 * prices["input"])
+                + (output_tokens / 1_000_000 * prices["output"])
+                + (cache_read / 1_000_000 * prices["cache_read"])
+                + (cache_write / 1_000_000 * prices["cache_write"])
+            )
+            
+            # Track daily cumulative cost
+            today = time.strftime("%Y-%m-%d")
+            if not hasattr(self, "_daily_cost"):
+                # Use class-level tracking
+                AgentCoreHandler._daily_cost = {"date": today, "total": 0.0, "requests": 0}
+            if AgentCoreHandler._daily_cost["date"] != today:
+                AgentCoreHandler._daily_cost = {"date": today, "total": 0.0, "requests": 0}
+            AgentCoreHandler._daily_cost["total"] += cost_estimate
+            AgentCoreHandler._daily_cost["requests"] += 1
             
             # Add metadata to response
             result["metadata"] = {
@@ -1478,12 +1517,24 @@ class AgentCoreHandler(BaseHTTPRequestHandler):
                 "channel": channel,
                 "duration_ms": duration_ms,
                 "cost_estimate": round(cost_estimate, 6),
+                "tokens": {
+                    "input": input_tokens,
+                    "output": output_tokens,
+                    "cache_read": cache_read,
+                    "cache_write": cache_write,
+                },
+                "daily_cost": round(AgentCoreHandler._daily_cost["total"], 4),
+                "daily_requests": AgentCoreHandler._daily_cost["requests"],
             }
             
             logger.info(
                 f"Request completed: channel={channel}, "
                 f"model={selected_model}, duration={duration_ms}ms, "
-                f"cost_estimate=${cost_estimate:.6f}"
+                f"tokens(in={input_tokens},out={output_tokens},"
+                f"cache_read={cache_read},cache_write={cache_write}), "
+                f"cost=${cost_estimate:.6f}, "
+                f"daily_total=${AgentCoreHandler._daily_cost['total']:.4f} "
+                f"({AgentCoreHandler._daily_cost['requests']} reqs)"
             )
             
             self._respond(200, result)
